@@ -1,0 +1,55 @@
+# Save this file in the repo at: .github/workflows/publish-feeds.yml
+#
+# What it does: every day (and on demand), downloads the ChatGPT product feed
+# CSV that Google Sheets publishes, sanity-checks it, and commits it to this
+# repo. GitHub then serves it at a plain HTTPS URL with no query string:
+#
+#   https://raw.githubusercontent.com/SchiitAudio/product-feeds/main/chatgpt_products.csv
+#
+# That URL is what goes into OpenAI Ads Manager > Feeds > Hosted URL.
+
+name: Publish product feeds
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Download ChatGPT feed from Google Sheets
+        run: |
+          set -euo pipefail
+          URL='https://docs.google.com/spreadsheets/d/e/2PACX-1vQrisTNMgOPYe4CAoPC1WdfTx2PUmwHjPqH_gHyKcBmiQcslsHOUhbi8ID90_Ys5kPFYig4J6yVubU7/pub?gid=0&single=true&output=csv'
+          curl -fsSL --retry 3 --retry-delay 10 "$URL" -o chatgpt_products.csv.new
+
+      - name: Sanity-check the download
+        run: |
+          set -euo pipefail
+          head -c 7 chatgpt_products.csv.new | grep -q '^item_id' \
+            || { echo "ERROR: header does not start with item_id"; head -c 300 chatgpt_products.csv.new; exit 1; }
+          ROWS=$(python3 -c "import csv,sys;print(sum(1 for _ in csv.reader(open('chatgpt_products.csv.new',newline='',encoding='utf-8')))-1)")
+          echo "Product rows: $ROWS"
+          [ "$ROWS" -ge 50 ] || { echo "ERROR: only $ROWS rows; refusing to publish"; exit 1; }
+          mv chatgpt_products.csv.new chatgpt_products.csv
+
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          git config user.name  "feed-bot"
+          git config user.email "feed-bot@users.noreply.github.com"
+          git add chatgpt_products.csv
+          if git diff --cached --quiet; then
+            echo "No changes since last run."
+          else
+            git commit -m "Update ChatGPT product feed $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
